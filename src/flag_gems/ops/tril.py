@@ -165,7 +165,10 @@ def tril(A, diagonal=0):
             tril_copy_lower_kernel[grid](A_input, out, M, N, N_eff, diagonal)
     else:
         out = torch.empty(
-            A.shape, dtype=A.dtype, device=A.device, memory_format=torch.contiguous_format
+            A.shape,
+            dtype=A.dtype,
+            device=A.device,
+            memory_format=torch.contiguous_format,
         )
         with torch_device_fn.device(A_input.device):
             tril_kernel[grid](A_input, out, M, N, diagonal)
