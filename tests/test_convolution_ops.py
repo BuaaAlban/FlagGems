@@ -426,6 +426,111 @@ def test_accuracy_conv3d_padding(
         del os.environ["MUSA_ENABLE_SQMMA"]
 
 
+# conv_transpose2d test shapes
+# weight shape for conv_transpose2d: (in_channels, out_channels/groups, kH, kW)
+SHAPE_CONV_TRANSPOSE2D = [
+    # (input_shape, weight_shape, groups)
+    ((1, 2, 5, 5), (2, 1, 3, 3), 1),  # small, groups=1
+    ((2, 3, 9, 9), (3, 1, 3, 3), 1),  # medium, groups=1
+    ((32, 8, 8, 8), (8, 32, 2, 2), 1),  # larger batch
+    ((2, 4, 5, 5), (4, 2, 3, 3), 2),  # groups=2
+    ((1, 8, 4, 4), (8, 2, 3, 3), 4),  # groups=4
+    ((1, 1, 3, 3), (1, 1, 3, 3), 1),  # minimal
+    ((4, 16, 16, 16), (16, 8, 5, 5), 1),  # larger kernel
+    ((1, 2, 7, 7), (2, 3, 3, 3), 1),  # odd spatial dim
+]
+
+
+@pytest.mark.conv_transpose2d
+@pytest.mark.parametrize("shape, kernel, groups", SHAPE_CONV_TRANSPOSE2D)
+@pytest.mark.parametrize("stride", [1, 2])
+@pytest.mark.parametrize("padding", [0, 1])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+@pytest.mark.parametrize("dilation", [1, 2])
+@pytest.mark.parametrize("bias", [True, False])
+def test_accuracy_conv_transpose2d(
+    shape, kernel, stride, padding, groups, dtype, dilation, bias
+):
+    torch.backends.cudnn.allow_tf32 = False
+
+    inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
+    ref_inp = to_reference(inp, True)
+    weight = torch.randn(kernel, dtype=dtype, device=flag_gems.device)
+    ref_weight = to_reference(weight, True)
+
+    if bias:
+        out_channels = kernel[1] * groups
+        bias_tensor = torch.randn(out_channels, dtype=dtype, device=flag_gems.device)
+        ref_bias = to_reference(bias_tensor, True)
+    else:
+        bias_tensor = None
+        ref_bias = None
+
+    ref_out = torch.nn.functional.conv_transpose2d(
+        ref_inp,
+        ref_weight,
+        bias=ref_bias,
+        stride=stride,
+        padding=padding,
+        output_padding=0,
+        groups=groups,
+        dilation=dilation,
+    )
+
+    with flag_gems.use_gems():
+        res_out = torch.nn.functional.conv_transpose2d(
+            inp,
+            weight,
+            bias=bias_tensor,
+            stride=stride,
+            padding=padding,
+            output_padding=0,
+            groups=groups,
+            dilation=dilation,
+        )
+
+    gems_assert_close(res_out, ref_out, dtype)
+
+
+@pytest.mark.conv_transpose2d
+@pytest.mark.parametrize("stride", [2, 3])
+@pytest.mark.parametrize("output_padding_val", [1])
+@pytest.mark.parametrize("dtype", [torch.float32])
+def test_accuracy_conv_transpose2d_output_padding(stride, output_padding_val, dtype):
+    """Test conv_transpose2d with non-zero output_padding."""
+    torch.backends.cudnn.allow_tf32 = False
+    shape = (2, 4, 8, 8)
+    kernel = (4, 2, 3, 3)
+    groups = 1
+    padding = 1
+
+    inp = torch.randn(shape, dtype=dtype, device=flag_gems.device)
+    ref_inp = to_reference(inp, True)
+    weight = torch.randn(kernel, dtype=dtype, device=flag_gems.device)
+    ref_weight = to_reference(weight, True)
+
+    ref_out = torch.nn.functional.conv_transpose2d(
+        ref_inp,
+        ref_weight,
+        stride=stride,
+        padding=padding,
+        output_padding=output_padding_val,
+        groups=groups,
+    )
+
+    with flag_gems.use_gems():
+        res_out = torch.nn.functional.conv_transpose2d(
+            inp,
+            weight,
+            stride=stride,
+            padding=padding,
+            output_padding=output_padding_val,
+            groups=groups,
+        )
+
+    gems_assert_close(res_out, ref_out, dtype)
+
+
 SHAPE_DEPTHWISE = [
     ((32, 4, 8, 8), (32, 1, 2, 2), (2, 2)),
     ((18, 16, 4, 4), (16, 1, 2, 2), (2, 2)),
