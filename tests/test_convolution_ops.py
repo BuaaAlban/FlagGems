@@ -475,7 +475,7 @@ def test_accuracy_conv_transpose2d(
         output_padding=0,
         groups=groups,
         dilation=dilation,
-    )
+    ).to(dtype)
 
     with flag_gems.use_gems():
         res_out = torch.nn.functional.conv_transpose2d(
@@ -489,7 +489,10 @@ def test_accuracy_conv_transpose2d(
             dilation=dilation,
         )
 
-    gems_assert_close(res_out, ref_out, dtype)
+    # reduce_dim accounts for accumulation over in_c_per_group * kH * kW
+    in_c_per_group = shape[1] // groups
+    reduce_dim = in_c_per_group * kernel[2] * kernel[3]
+    gems_assert_close(res_out, ref_out, dtype, reduce_dim=reduce_dim)
 
 
 @pytest.mark.conv_transpose2d
@@ -516,7 +519,7 @@ def test_accuracy_conv_transpose2d_output_padding(stride, output_padding_val, dt
         padding=padding,
         output_padding=output_padding_val,
         groups=groups,
-    )
+    ).to(dtype)
 
     with flag_gems.use_gems():
         res_out = torch.nn.functional.conv_transpose2d(
@@ -528,7 +531,9 @@ def test_accuracy_conv_transpose2d_output_padding(stride, output_padding_val, dt
             groups=groups,
         )
 
-    gems_assert_close(res_out, ref_out, dtype)
+    in_c_per_group = shape[1] // groups
+    reduce_dim = in_c_per_group * kernel[2] * kernel[3]
+    gems_assert_close(res_out, ref_out, dtype, reduce_dim=reduce_dim)
 
 
 SHAPE_DEPTHWISE = [
