@@ -378,7 +378,7 @@ class AvgPool3dBenchmark(GenericBenchmark):
             (4, 3, 16, 56, 56),
             (8, 64, 8, 28, 28),
             (16, 128, 4, 14, 14),
-            (32, 256, 2, 7, 7),
+            (32, 256, 4, 7, 7),
         ]
 
         for shape in shapes_5d:
