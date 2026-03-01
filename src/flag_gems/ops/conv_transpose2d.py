@@ -98,31 +98,51 @@ def conv_transpose2d_forward_kernel(
     dilation_height: tl.constexpr,
     dilation_width: tl.constexpr,
     groups: tl.constexpr,
+    n_subgrids: tl.constexpr,
+    max_H_sub,
+    max_W_sub,
     BLOCK_NI_HO_WO: tl.constexpr,
     BLOCK_CI: tl.constexpr,
     BLOCK_CO: tl.constexpr,
 ):
     """Triton kernel for transposed 2D convolution forward pass.
 
-    For each output position (oh, ow), we iterate over kernel positions (kh, kw)
-    and input channels (ci). The mapping from output to input is:
-        ih = (oh + padding_h - kh * dilation_h) / stride_h
-        iw = (ow + padding_w - kw * dilation_w) / stride_w
-    Only valid when the numerator is non-negative, divisible by stride,
-    and the resulting ih/iw is in [0, input_height/input_width).
+    Uses sub-grid tiling to eliminate wasted iterations for stride > 1.
+    Output positions are divided into stride_h * stride_w sub-grids based on
+    (oh % stride_h, ow % stride_w). Within each sub-grid, only the valid
+    (kh, kw) kernel positions are iterated, avoiding the wasted iterations
+    where the divisibility check fails (which is ~75% for stride=2).
+
+    For stride=1, n_subgrids=1 and this degenerates to the standard approach.
 
     Weight shape: (in_channels, out_channels/groups, kH, kW)
     """
-    pid_ni_ho_wo = tle.program_id(0)
+    pid_raw = tle.program_id(0)
     pid_co = tle.program_id(1)
     pid_group = tle.program_id(2)
 
-    # Decompose flattened index into (n, oh, ow)
-    ni_ho_wo_offset = pid_ni_ho_wo * BLOCK_NI_HO_WO + tl.arange(0, BLOCK_NI_HO_WO)
-    ni_ho_offset = ni_ho_wo_offset // out_width
-    n_idx = ni_ho_offset // out_height
-    oh_idx = ni_ho_offset % out_height
-    ow_idx = ni_ho_wo_offset % out_width
+    # Determine sub-grid from program id
+    pid_subgrid = pid_raw % n_subgrids
+    pid_spatial = pid_raw // n_subgrids
+
+    sub_r = pid_subgrid // stride_width
+    sub_s = pid_subgrid % stride_width
+
+    # Compute sub-grid spatial dimensions
+    H_sub = (out_height - sub_r + stride_height - 1) // stride_height
+    W_sub = (out_width - sub_s + stride_width - 1) // stride_width
+
+    # Decompose spatial tile into (n, oh_sub_idx, ow_sub_idx)
+    spatial_offset = pid_spatial * BLOCK_NI_HO_WO + tl.arange(0, BLOCK_NI_HO_WO)
+    n_hw = H_sub * W_sub
+    n_idx = spatial_offset // n_hw
+    hw_idx = spatial_offset % n_hw
+    oh_sub_idx = hw_idx // W_sub
+    ow_sub_idx = hw_idx % W_sub
+
+    # Map sub-grid indices to actual output positions
+    oh = sub_r + oh_sub_idx * stride_height
+    ow = sub_s + ow_sub_idx * stride_width
 
     # Output channel offset within this group
     co_offset = pid_co * BLOCK_CO + tl.arange(0, BLOCK_CO)
@@ -130,65 +150,80 @@ def conv_transpose2d_forward_kernel(
     # Initialize accumulator in float32 for numerical stability
     accum = tl.zeros((BLOCK_NI_HO_WO, BLOCK_CO), dtype=tl.float32)
 
-    # Loop over input channels (blocked) and kernel spatial positions
-    BLOCK_CI_COUNT = (in_c_per_group + BLOCK_CI - 1) // BLOCK_CI
-    for hwc in range(weight_height * weight_width * BLOCK_CI_COUNT):
-        c_block = (hwc % BLOCK_CI_COUNT) * BLOCK_CI
-        hw = hwc // BLOCK_CI_COUNT
-        kh = hw // weight_width
-        kw = hw % weight_width
+    BLOCK_CI_COUNT: tl.constexpr = (in_c_per_group + BLOCK_CI - 1) // BLOCK_CI
 
-        # For conv_transpose2d: ih = (oh + padding - kh * dilation) / stride
-        # Valid only if divisible by stride and in range [0, input_height)
-        oh_shifted_h = oh_idx + padding_height - kh * dilation_height
-        ow_shifted_w = ow_idx + padding_width - kw * dilation_width
+    # Loop over kernel positions - only valid ones for this sub-grid.
+    # The outer loops over kh, kw are unrolled (constexpr bounds).
+    # The validity check uses sub_r/sub_s which are uniform across all
+    # threads in the block, so invalid iterations are skipped entirely.
+    for kh in range(weight_height):
+        # Check if kh is valid for this sub-grid (divisibility check only;
+        # ih_base can be negative, handled by mask bounds check below)
+        kh_shifted = sub_r + padding_height - kh * dilation_height
+        if kh_shifted % stride_height == 0:
+            ih_base = kh_shifted // stride_height
 
-        # Check divisibility by stride
-        ih_valid = oh_shifted_h % stride_height == 0
-        iw_valid = ow_shifted_w % stride_width == 0
+            for kw in range(weight_width):
+                kw_shifted = sub_s + padding_width - kw * dilation_width
+                if kw_shifted % stride_width == 0:
+                    iw_base = kw_shifted // stride_width
 
-        ih = oh_shifted_h // stride_height
-        iw = ow_shifted_w // stride_width
+                    # Input positions: ih = oh_sub_idx + ih_base
+                    ih = oh_sub_idx + ih_base
+                    iw = ow_sub_idx + iw_base
 
-        ci_offset = c_block + tl.arange(0, BLOCK_CI)
+                    for ci_block in range(BLOCK_CI_COUNT):
+                        ci_offset = ci_block * BLOCK_CI + tl.arange(0, BLOCK_CI)
 
-        # Input pointer: input[n, group * in_c_per_group + ci, ih, iw]
-        curr_input_pointer = (
-            input_pointer
-            + (input_n_stride * n_idx)[:, None]
-            + (input_c_stride * (pid_group * in_c_per_group + ci_offset))[None, :]
-            + (input_h_stride * ih)[:, None]
-            + (input_w_stride * iw)[:, None]
-        )
+                        # Load input[n, group*ci_per_g + ci, ih, iw]
+                        curr_input_pointer = (
+                            input_pointer
+                            + (input_n_stride * n_idx)[:, None]
+                            + (
+                                input_c_stride
+                                * (pid_group * in_c_per_group + ci_offset)
+                            )[None, :]
+                            + (input_h_stride * ih)[:, None]
+                            + (input_w_stride * iw)[:, None]
+                        )
 
-        input_mask = (
-            (n_idx < in_n)[:, None]
-            & (ci_offset < in_c_per_group)[None, :]
-            & ih_valid[:, None]
-            & iw_valid[:, None]
-            & (ih >= 0)[:, None]
-            & (ih < input_height)[:, None]
-            & (iw >= 0)[:, None]
-            & (iw < input_width)[:, None]
-        )
+                        input_mask = (
+                            (n_idx < in_n)[:, None]
+                            & (ci_offset < in_c_per_group)[None, :]
+                            & (ih >= 0)[:, None]
+                            & (ih < input_height)[:, None]
+                            & (iw >= 0)[:, None]
+                            & (iw < input_width)[:, None]
+                        )
 
-        # Weight pointer: weight[group * in_c_per_group + ci, co, kh, kw]
-        curr_weight_pointer = (
-            weight_pointer
-            + (weight_inc_stride * (pid_group * in_c_per_group + ci_offset))[:, None]
-            + (weight_outc_stride * co_offset)[None, :]
-            + weight_h_stride * kh
-            + weight_w_stride * kw
-        )
+                        # Load weight[group*ci_per_g + ci, co, kh, kw]
+                        curr_weight_pointer = (
+                            weight_pointer
+                            + (
+                                weight_inc_stride
+                                * (pid_group * in_c_per_group + ci_offset)
+                            )[:, None]
+                            + (weight_outc_stride * co_offset)[None, :]
+                            + weight_h_stride * kh
+                            + weight_w_stride * kw
+                        )
 
-        weight_mask = (ci_offset < in_c_per_group)[:, None] & (
-            co_offset < out_c_per_group
-        )[None, :]
+                        weight_mask = (ci_offset < in_c_per_group)[:, None] & (
+                            co_offset < out_c_per_group
+                        )[None, :]
 
-        input_block = tl.load(curr_input_pointer, mask=input_mask, other=0.0)
-        weight_block = tl.load(curr_weight_pointer, mask=weight_mask, other=0.0)
+                        input_block = tl.load(
+                            curr_input_pointer,
+                            mask=input_mask,
+                            other=0.0,
+                        )
+                        weight_block = tl.load(
+                            curr_weight_pointer,
+                            mask=weight_mask,
+                            other=0.0,
+                        )
 
-        accum += tl.dot(input_block, weight_block, allow_tf32=False)
+                        accum += tl.dot(input_block, weight_block, allow_tf32=False)
 
     # Add bias: bias[group * out_c_per_group + co]
     bias_ptr = bias_pointer + pid_group * out_c_per_group + co_offset
@@ -196,19 +231,19 @@ def conv_transpose2d_forward_kernel(
     bias_val = tl.load(bias_ptr, mask=bias_mask, other=0.0).to(tl.float32)
     accum += bias_val[None, :]
 
-    # Store output: output[n, group * out_c_per_group + co, oh, ow]
+    # Store output[n, group*oc_per_g + co, oh, ow]
     output_ptr = (
         output_pointer
         + (output_n_stride * n_idx)[:, None]
         + (output_c_stride * (pid_group * out_c_per_group + co_offset))[None, :]
-        + (output_h_stride * oh_idx)[:, None]
-        + (output_w_stride * ow_idx)[:, None]
+        + (output_h_stride * oh)[:, None]
+        + (output_w_stride * ow)[:, None]
     )
     output_mask = (
         (n_idx < in_n)[:, None]
         & (co_offset < out_c_per_group)[None, :]
-        & (oh_idx < out_height)[:, None]
-        & (ow_idx < out_width)[:, None]
+        & (oh_sub_idx < H_sub)[:, None]
+        & (ow_sub_idx < W_sub)[:, None]
     )
 
     tl.store(output_ptr, accum, mask=output_mask)
@@ -291,8 +326,14 @@ def conv_transpose2d(
     else:
         bias_tensor = bias
 
+    # Sub-grid tiling: divide output into stride_h * stride_w sub-grids
+    n_subgrids = stride_h * stride_w
+    max_H_sub = (out_height + stride_h - 1) // stride_h
+    max_W_sub = (out_width + stride_w - 1) // stride_w
+    max_sub_spatial = in_n * max_H_sub * max_W_sub
+
     grid = lambda META: (
-        triton.cdiv(in_n * out_height * out_width, META["BLOCK_NI_HO_WO"]),
+        n_subgrids * triton.cdiv(max_sub_spatial, META["BLOCK_NI_HO_WO"]),
         triton.cdiv(out_c_per_group, META["BLOCK_CO"]),
         groups,
     )
@@ -324,6 +365,9 @@ def conv_transpose2d(
             dilation_h,
             dilation_w,
             groups=groups,
+            n_subgrids=n_subgrids,
+            max_H_sub=max_H_sub,
+            max_W_sub=max_W_sub,
         )
 
     return output
