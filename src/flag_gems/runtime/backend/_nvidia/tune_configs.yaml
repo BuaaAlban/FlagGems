@@ -1625,10 +1625,48 @@ gated_activation:
       - 1024
 
 conv_transpose2d_forward:
+  # Small blocks for small shapes — maximize parallelism
+  - META:
+      BLOCK_NI_HO_WO: 16
+      BLOCK_CO: 16
+      BLOCK_CI: 16
+    num_warps: 2
+    num_stages: 2
+  - META:
+      BLOCK_NI_HO_WO: 16
+      BLOCK_CO: 32
+      BLOCK_CI: 16
+    num_warps: 2
+    num_stages: 2
+  - META:
+      BLOCK_NI_HO_WO: 32
+      BLOCK_CO: 16
+      BLOCK_CI: 16
+    num_warps: 2
+    num_stages: 2
+  # Medium blocks — balance parallelism and efficiency
+  - META:
+      BLOCK_NI_HO_WO: 32
+      BLOCK_CO: 32
+      BLOCK_CI: 16
+    num_warps: 4
+    num_stages: 2
   - META:
       BLOCK_NI_HO_WO: 32
       BLOCK_CO: 32
       BLOCK_CI: 32
+    num_warps: 4
+    num_stages: 2
+  - META:
+      BLOCK_NI_HO_WO: 32
+      BLOCK_CO: 64
+      BLOCK_CI: 32
+    num_warps: 4
+    num_stages: 2
+  - META:
+      BLOCK_NI_HO_WO: 64
+      BLOCK_CO: 32
+      BLOCK_CI: 16
     num_warps: 4
     num_stages: 2
   - META:
@@ -1643,6 +1681,13 @@ conv_transpose2d_forward:
       BLOCK_CI: 32
     num_warps: 4
     num_stages: 2
+  - META:
+      BLOCK_NI_HO_WO: 64
+      BLOCK_CO: 64
+      BLOCK_CI: 16
+    num_warps: 4
+    num_stages: 3
+  # Large blocks — for large spatial outputs
   - META:
       BLOCK_NI_HO_WO: 128
       BLOCK_CO: 32
@@ -1660,4 +1705,43 @@ conv_transpose2d_forward:
       BLOCK_CO: 128
       BLOCK_CI: 32
     num_warps: 4
+    num_stages: 2
+  # High pipelining — for memory-bound cases
+  - META:
+      BLOCK_NI_HO_WO: 64
+      BLOCK_CO: 64
+      BLOCK_CI: 32
+    num_warps: 4
+    num_stages: 4
+  - META:
+      BLOCK_NI_HO_WO: 128
+      BLOCK_CO: 64
+      BLOCK_CI: 32
+    num_warps: 4
+    num_stages: 4
+  # Large CI for large channel shapes
+  - META:
+      BLOCK_NI_HO_WO: 32
+      BLOCK_CO: 32
+      BLOCK_CI: 64
+    num_warps: 4
+    num_stages: 2
+  - META:
+      BLOCK_NI_HO_WO: 64
+      BLOCK_CO: 32
+      BLOCK_CI: 64
+    num_warps: 4
+    num_stages: 2
+  # More warps for large blocks
+  - META:
+      BLOCK_NI_HO_WO: 128
+      BLOCK_CO: 64
+      BLOCK_CI: 32
+    num_warps: 8
+    num_stages: 2
+  - META:
+      BLOCK_NI_HO_WO: 128
+      BLOCK_CO: 128
+      BLOCK_CI: 32
+    num_warps: 8
     num_stages: 2
