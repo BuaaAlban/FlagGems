@@ -224,12 +224,8 @@ def avg_pool3d_backward_kernel(
     n_idx = pid_nc // in_c
     c_idx = pid_nc % in_c
 
-    grad_input_block_ptr = (
-        grad_input_ptr + n_idx * in_stride_n + c_idx * in_stride_c
-    )
-    grad_output_base_ptr = (
-        grad_output_ptr + n_idx * out_stride_n + c_idx * out_stride_c
-    )
+    grad_input_block_ptr = grad_input_ptr + n_idx * in_stride_n + c_idx * in_stride_c
+    grad_output_base_ptr = grad_output_ptr + n_idx * out_stride_n + c_idx * out_stride_c
 
     h_in_offsets = h_block_idx * BLOCK_H + tl.arange(0, BLOCK_H)
     w_in_offsets = w_block_idx * BLOCK_W + tl.arange(0, BLOCK_W)
@@ -512,7 +508,11 @@ def avg_pool3d_backward(
     dilation_d, dilation_h, dilation_w = 1, 1, 1
 
     in_n, in_c, in_d, in_h, in_w = input.shape
-    out_d, out_h, out_w = grad_output.shape[2], grad_output.shape[3], grad_output.shape[4]
+    out_d, out_h, out_w = (
+        grad_output.shape[2],
+        grad_output.shape[3],
+        grad_output.shape[4],
+    )
 
     grad_input = torch.zeros_like(input, dtype=torch.float32)
 
@@ -521,9 +521,7 @@ def avg_pool3d_backward(
 
     grid = lambda meta: (
         in_n * in_c,
-        in_d
-        * triton.cdiv(in_h, meta["BLOCK_H"])
-        * triton.cdiv(in_w, meta["BLOCK_W"]),
+        in_d * triton.cdiv(in_h, meta["BLOCK_H"]) * triton.cdiv(in_w, meta["BLOCK_W"]),
     )
 
     avg_pool3d_backward_kernel[grid](
