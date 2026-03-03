@@ -400,9 +400,7 @@ def col2im_kernel(
             val = tl.load(columns_ptr + col_offset, mask=valid, other=0.0)
             accum += val
 
-    out_offset = (
-        pid_b * C_out_per_g * H_out * W_out + pid_c * H_out * W_out + hw_offset
-    )
+    out_offset = pid_b * C_out_per_g * H_out * W_out + pid_c * H_out * W_out + hw_offset
     tl.store(output_ptr + out_offset, accum, mask=hw_mask)
 
 
@@ -577,9 +575,7 @@ def conv_transpose2d(
 
     # Dispatch: use GEMM for fp32 or large channel counts;
     # direct kernel for fp16/bf16 with small channels.
-    use_gemm = (
-        input.dtype == torch.float32 or in_c_per_group >= _GEMM_CHANNEL_THRESHOLD
-    )
+    use_gemm = input.dtype == torch.float32 or in_c_per_group >= _GEMM_CHANNEL_THRESHOLD
 
     if use_gemm:
         return _conv_transpose2d_gemm(
@@ -607,9 +603,7 @@ def conv_transpose2d(
         )
     else:
         if bias is None:
-            bias_tensor = torch.zeros(
-                out_c, device=input.device, dtype=input.dtype
-            )
+            bias_tensor = torch.zeros(out_c, device=input.device, dtype=input.dtype)
         else:
             bias_tensor = bias
 
