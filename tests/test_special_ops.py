@@ -2062,7 +2062,9 @@ def test_accuracy_svd_identity_matrix(n):
     with flag_gems.use_gems():
         res_result = torch.svd(inp, some=True, compute_uv=True)
 
-    expected_S = torch.ones(n, dtype=torch.float32, device=flag_gems.device)
+    expected_S = to_reference(
+        torch.ones(n, dtype=torch.float32, device=flag_gems.device)
+    )
     gems_assert_close(res_result.S, expected_S, torch.float32)
 
 
@@ -2076,7 +2078,7 @@ def test_accuracy_svd_diagonal_matrix(n):
         res_result = torch.svd(inp, some=True, compute_uv=True)
 
     # S should be the diagonal values in descending order
-    expected_S = diag_vals.flip(0)
+    expected_S = to_reference(diag_vals.flip(0))
     gems_assert_close(res_result.S, expected_S, torch.float32)
 
 
@@ -2121,4 +2123,4 @@ def test_accuracy_svd_full_non_square(shape):
         res_result.U[..., :k] * res_result.S.unsqueeze(-2),
         res_result.V[..., :k].transpose(-2, -1),
     )
-    gems_assert_close(reconstructed, inp, torch.float32, reduce_dim=shape[-1])
+    gems_assert_close(reconstructed, to_reference(inp), torch.float32, reduce_dim=shape[-1])
