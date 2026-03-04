@@ -1965,7 +1965,7 @@ def test_accuracy_svd_reduced(shape, dtype, compute_uv):
             res_result.U * res_result.S.unsqueeze(-2),
             res_result.V.transpose(-2, -1),
         )
-        ref_inp_device = inp.to(dtype)
+        ref_inp_device = to_reference(inp)
         gems_assert_close(reconstructed, ref_inp_device, dtype, reduce_dim=shape[-1])
 
 
@@ -1992,7 +1992,7 @@ def test_accuracy_svd_full(shape, dtype, compute_uv):
             res_result.U[..., :k] * res_result.S.unsqueeze(-2),
             res_result.V[..., :k].transpose(-2, -1),
         )
-        ref_inp_device = inp.to(dtype)
+        ref_inp_device = to_reference(inp)
         gems_assert_close(reconstructed, ref_inp_device, dtype, reduce_dim=shape[-1])
 
 
