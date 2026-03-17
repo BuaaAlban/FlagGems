@@ -20,6 +20,24 @@ PAD_ZEROS = 0
 PAD_BORDER = 1
 PAD_REFLECTION = 2
 
+# Autotune configurations for 2D kernels
+GRID_SAMPLE_2D_CONFIGS = [
+    triton.Config({"BLOCK_SIZE": 128}, num_warps=4, num_stages=4),
+    triton.Config({"BLOCK_SIZE": 256}, num_warps=4, num_stages=3),
+    triton.Config({"BLOCK_SIZE": 512}, num_warps=4, num_stages=2),
+    triton.Config({"BLOCK_SIZE": 512}, num_warps=8, num_stages=2),
+    triton.Config({"BLOCK_SIZE": 1024}, num_warps=8, num_stages=2),
+]
+
+# Autotune configurations for 3D kernels
+GRID_SAMPLE_3D_CONFIGS = [
+    triton.Config({"BLOCK_SIZE": 128}, num_warps=4, num_stages=4),
+    triton.Config({"BLOCK_SIZE": 256}, num_warps=4, num_stages=3),
+    triton.Config({"BLOCK_SIZE": 512}, num_warps=4, num_stages=2),
+    triton.Config({"BLOCK_SIZE": 512}, num_warps=8, num_stages=2),
+    triton.Config({"BLOCK_SIZE": 1024}, num_warps=8, num_stages=2),
+]
+
 
 # ============================================================
 # Helper: coordinate transform (unnormalize grid value)
@@ -143,6 +161,7 @@ def _clip_or_reflect_1d(
 
 
 @libentry()
+@triton.autotune(configs=GRID_SAMPLE_2D_CONFIGS, key=["OH", "OW"])
 @triton.jit
 def grid_sampler_2d_nearest_kernel(
     output_ptr,
@@ -171,7 +190,9 @@ def grid_sampler_2d_nearest_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tle.program_id(0)
-    n = tle.program_id(1)
+    nc = tle.program_id(1)
+    n = nc // C
+    c = nc % C
     idx = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = idx < OH * OW
     ow = idx % OW
@@ -197,17 +218,14 @@ def grid_sampler_2d_nearest_kernel(
     safe_ix = tl.where(in_bound, ix_nearest, 0)
     safe_iy = tl.where(in_bound, iy_nearest, 0)
 
-    inp_offset = n * inp_sN + safe_iy * inp_sH + safe_ix * inp_sW
-
-    for c in range(0, C):
-        val = tl.load(
-            input_ptr + inp_offset + c * inp_sC, mask=mask & in_bound, other=0.0
-        )
-        out_offset = n * out_sN + c * out_sC + oh * out_sH + ow * out_sW
-        tl.store(output_ptr + out_offset, val, mask=mask)
+    inp_offset = n * inp_sN + c * inp_sC + safe_iy * inp_sH + safe_ix * inp_sW
+    val = tl.load(input_ptr + inp_offset, mask=mask & in_bound, other=0.0)
+    out_offset = n * out_sN + c * out_sC + oh * out_sH + ow * out_sW
+    tl.store(output_ptr + out_offset, val, mask=mask)
 
 
 @libentry()
+@triton.autotune(configs=GRID_SAMPLE_2D_CONFIGS, key=["OH", "OW"])
 @triton.jit
 def grid_sampler_2d_bilinear_kernel(
     output_ptr,
@@ -236,7 +254,9 @@ def grid_sampler_2d_bilinear_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tle.program_id(0)
-    n = tle.program_id(1)
+    nc = tle.program_id(1)
+    n = nc // C
+    c = nc % C
     idx = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = idx < OH * OW
     ow = idx % OW
@@ -280,7 +300,7 @@ def grid_sampler_2d_bilinear_kernel(
     safe_ix1 = tl.minimum(tl.maximum(ix1, 0), IW - 1)
     safe_iy1 = tl.minimum(tl.maximum(iy1, 0), IH - 1)
 
-    base = n * inp_sN
+    base = n * inp_sN + c * inp_sC
     off00 = base + safe_iy0 * inp_sH + safe_ix0 * inp_sW
     off01 = base + safe_iy0 * inp_sH + safe_ix1 * inp_sW
     off10 = base + safe_iy1 * inp_sH + safe_ix0 * inp_sW
@@ -291,27 +311,18 @@ def grid_sampler_2d_bilinear_kernel(
     w10 = (1.0 - wx) * wy
     w11 = wx * wy
 
-    for c in range(0, C):
-        c_off = c * inp_sC
-        v00 = tl.load(input_ptr + off00 + c_off, mask=mask & m00, other=0.0).to(
-            tl.float32
-        )
-        v01 = tl.load(input_ptr + off01 + c_off, mask=mask & m01, other=0.0).to(
-            tl.float32
-        )
-        v10 = tl.load(input_ptr + off10 + c_off, mask=mask & m10, other=0.0).to(
-            tl.float32
-        )
-        v11 = tl.load(input_ptr + off11 + c_off, mask=mask & m11, other=0.0).to(
-            tl.float32
-        )
+    v00 = tl.load(input_ptr + off00, mask=mask & m00, other=0.0).to(tl.float32)
+    v01 = tl.load(input_ptr + off01, mask=mask & m01, other=0.0).to(tl.float32)
+    v10 = tl.load(input_ptr + off10, mask=mask & m10, other=0.0).to(tl.float32)
+    v11 = tl.load(input_ptr + off11, mask=mask & m11, other=0.0).to(tl.float32)
 
-        result = w00 * v00 + w01 * v01 + w10 * v10 + w11 * v11
-        out_offset = n * out_sN + c * out_sC + oh * out_sH + ow * out_sW
-        tl.store(output_ptr + out_offset, result, mask=mask)
+    result = w00 * v00 + w01 * v01 + w10 * v10 + w11 * v11
+    out_offset = n * out_sN + c * out_sC + oh * out_sH + ow * out_sW
+    tl.store(output_ptr + out_offset, result, mask=mask)
 
 
 @libentry()
+@triton.autotune(configs=GRID_SAMPLE_2D_CONFIGS, key=["OH", "OW"])
 @triton.jit
 def grid_sampler_2d_bicubic_kernel(
     output_ptr,
@@ -340,7 +351,9 @@ def grid_sampler_2d_bicubic_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tle.program_id(0)
-    n = tle.program_id(1)
+    nc = tle.program_id(1)
+    n = nc // C
+    c = nc % C
     idx = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = idx < OH * OW
     ow = idx % OW
@@ -375,54 +388,51 @@ def grid_sampler_2d_bicubic_kernel(
     wy_1 = _cubic_interp_weight(ty - 1.0)
     wy_2 = _cubic_interp_weight(ty - 2.0)
 
-    base = n * inp_sN
+    base = n * inp_sN + c * inp_sC
+    result = tl.zeros_like(tx)
 
-    for c in range(0, C):
-        c_off = c * inp_sC
-        result = tl.zeros_like(tx)
+    # 4 rows (dy = -1, 0, 1, 2)
+    for dy in range(-1, 3):
+        iy_val = iy_floor + dy
+        safe_iy = _clip_or_reflect_1d(iy_val, IH, padding_mode, align_corners)
+        if padding_mode == 0:  # zeros
+            y_in = (iy_val >= 0) & (iy_val < IH)
+        else:
+            y_in = mask
 
-        # 4 rows (dy = -1, 0, 1, 2)
-        for dy in range(-1, 3):
-            iy_val = iy_floor + dy
-            safe_iy = _clip_or_reflect_1d(iy_val, IH, padding_mode, align_corners)
+        # Accumulate across 4 columns
+        row_val = tl.zeros_like(tx)
+        for dx in range(-1, 3):
+            ix_val = ix_floor + dx
+            safe_ix = _clip_or_reflect_1d(ix_val, IW, padding_mode, align_corners)
             if padding_mode == 0:  # zeros
-                y_in = (iy_val >= 0) & (iy_val < IH)
+                in_bound = y_in & (ix_val >= 0) & (ix_val < IW)
             else:
-                y_in = mask
-
-            # Accumulate across 4 columns
-            row_val = tl.zeros_like(tx)
-            for dx in range(-1, 3):
-                ix_val = ix_floor + dx
-                safe_ix = _clip_or_reflect_1d(ix_val, IW, padding_mode, align_corners)
-                if padding_mode == 0:  # zeros
-                    in_bound = y_in & (ix_val >= 0) & (ix_val < IW)
-                else:
-                    in_bound = y_in
-                off = base + c_off + safe_iy * inp_sH + safe_ix * inp_sW
-                val = tl.load(input_ptr + off, mask=mask & in_bound, other=0.0).to(
-                    tl.float32
-                )
-                if dx == -1:
-                    row_val += val * wx_m1
-                elif dx == 0:
-                    row_val += val * wx_0
-                elif dx == 1:
-                    row_val += val * wx_1
-                else:
-                    row_val += val * wx_2
-
-            if dy == -1:
-                result += row_val * wy_m1
-            elif dy == 0:
-                result += row_val * wy_0
-            elif dy == 1:
-                result += row_val * wy_1
+                in_bound = y_in
+            off = base + safe_iy * inp_sH + safe_ix * inp_sW
+            val = tl.load(input_ptr + off, mask=mask & in_bound, other=0.0).to(
+                tl.float32
+            )
+            if dx == -1:
+                row_val += val * wx_m1
+            elif dx == 0:
+                row_val += val * wx_0
+            elif dx == 1:
+                row_val += val * wx_1
             else:
-                result += row_val * wy_2
+                row_val += val * wx_2
 
-        out_offset = n * out_sN + c * out_sC + oh * out_sH + ow * out_sW
-        tl.store(output_ptr + out_offset, result, mask=mask)
+        if dy == -1:
+            result += row_val * wy_m1
+        elif dy == 0:
+            result += row_val * wy_0
+        elif dy == 1:
+            result += row_val * wy_1
+        else:
+            result += row_val * wy_2
+
+    out_offset = n * out_sN + c * out_sC + oh * out_sH + ow * out_sW
+    tl.store(output_ptr + out_offset, result, mask=mask)
 
 
 # ============================================================
@@ -431,6 +441,7 @@ def grid_sampler_2d_bicubic_kernel(
 
 
 @libentry()
+@triton.autotune(configs=GRID_SAMPLE_3D_CONFIGS, key=["OD", "OH", "OW"])
 @triton.jit
 def grid_sampler_3d_nearest_kernel(
     output_ptr,
@@ -464,7 +475,9 @@ def grid_sampler_3d_nearest_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tle.program_id(0)
-    n = tle.program_id(1)
+    nc = tle.program_id(1)
+    n = nc // C
+    c = nc % C
     idx = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     total = OD * OH * OW
     mask = idx < total
@@ -494,17 +507,16 @@ def grid_sampler_3d_nearest_kernel(
     safe_iy = tl.where(in_bound, iy_nearest, 0)
     safe_iz = tl.where(in_bound, iz_nearest, 0)
 
-    inp_offset = n * inp_sN + safe_iz * inp_sD + safe_iy * inp_sH + safe_ix * inp_sW
-
-    for c in range(0, C):
-        val = tl.load(
-            input_ptr + inp_offset + c * inp_sC, mask=mask & in_bound, other=0.0
-        )
-        out_offset = n * out_sN + c * out_sC + od * out_sD + oh * out_sH + ow * out_sW
-        tl.store(output_ptr + out_offset, val, mask=mask)
+    inp_offset = (
+        n * inp_sN + c * inp_sC + safe_iz * inp_sD + safe_iy * inp_sH + safe_ix * inp_sW
+    )
+    val = tl.load(input_ptr + inp_offset, mask=mask & in_bound, other=0.0)
+    out_offset = n * out_sN + c * out_sC + od * out_sD + oh * out_sH + ow * out_sW
+    tl.store(output_ptr + out_offset, val, mask=mask)
 
 
 @libentry()
+@triton.autotune(configs=GRID_SAMPLE_3D_CONFIGS, key=["OD", "OH", "OW"])
 @triton.jit
 def grid_sampler_3d_trilinear_kernel(
     output_ptr,
@@ -538,7 +550,9 @@ def grid_sampler_3d_trilinear_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tle.program_id(0)
-    n = tle.program_id(1)
+    nc = tle.program_id(1)
+    n = nc // C
+    c = nc % C
     idx = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     total = OD * OH * OW
     mask = idx < total
@@ -609,7 +623,7 @@ def grid_sampler_3d_trilinear_kernel(
     s_iy1 = tl.minimum(tl.maximum(iy1, 0), IH - 1)
     s_iz1 = tl.minimum(tl.maximum(iz1, 0), ID - 1)
 
-    base = n * inp_sN
+    base = n * inp_sN + c * inp_sC
 
     off000 = base + s_iz0 * inp_sD + s_iy0 * inp_sH + s_ix0 * inp_sW
     off001 = base + s_iz0 * inp_sD + s_iy0 * inp_sH + s_ix1 * inp_sW
@@ -620,52 +634,32 @@ def grid_sampler_3d_trilinear_kernel(
     off110 = base + s_iz1 * inp_sD + s_iy1 * inp_sH + s_ix0 * inp_sW
     off111 = base + s_iz1 * inp_sD + s_iy1 * inp_sH + s_ix1 * inp_sW
 
-    for c in range(0, C):
-        c_off = c * inp_sC
-        v000 = tl.load(input_ptr + off000 + c_off, mask=mask & m000, other=0.0).to(
-            tl.float32
-        )
-        v001 = tl.load(input_ptr + off001 + c_off, mask=mask & m001, other=0.0).to(
-            tl.float32
-        )
-        v010 = tl.load(input_ptr + off010 + c_off, mask=mask & m010, other=0.0).to(
-            tl.float32
-        )
-        v011 = tl.load(input_ptr + off011 + c_off, mask=mask & m011, other=0.0).to(
-            tl.float32
-        )
-        v100 = tl.load(input_ptr + off100 + c_off, mask=mask & m100, other=0.0).to(
-            tl.float32
-        )
-        v101 = tl.load(input_ptr + off101 + c_off, mask=mask & m101, other=0.0).to(
-            tl.float32
-        )
-        v110 = tl.load(input_ptr + off110 + c_off, mask=mask & m110, other=0.0).to(
-            tl.float32
-        )
-        v111 = tl.load(input_ptr + off111 + c_off, mask=mask & m111, other=0.0).to(
-            tl.float32
-        )
+    v000 = tl.load(input_ptr + off000, mask=mask & m000, other=0.0).to(tl.float32)
+    v001 = tl.load(input_ptr + off001, mask=mask & m001, other=0.0).to(tl.float32)
+    v010 = tl.load(input_ptr + off010, mask=mask & m010, other=0.0).to(tl.float32)
+    v011 = tl.load(input_ptr + off011, mask=mask & m011, other=0.0).to(tl.float32)
+    v100 = tl.load(input_ptr + off100, mask=mask & m100, other=0.0).to(tl.float32)
+    v101 = tl.load(input_ptr + off101, mask=mask & m101, other=0.0).to(tl.float32)
+    v110 = tl.load(input_ptr + off110, mask=mask & m110, other=0.0).to(tl.float32)
+    v111 = tl.load(input_ptr + off111, mask=mask & m111, other=0.0).to(tl.float32)
 
-        result = (
-            w000 * v000
-            + w001 * v001
-            + w010 * v010
-            + w011 * v011
-            + w100 * v100
-            + w101 * v101
-            + w110 * v110
-            + w111 * v111
-        )
-        out_offset = n * out_sN + c * out_sC + od * out_sD + oh * out_sH + ow * out_sW
-        tl.store(output_ptr + out_offset, result, mask=mask)
+    result = (
+        w000 * v000
+        + w001 * v001
+        + w010 * v010
+        + w011 * v011
+        + w100 * v100
+        + w101 * v101
+        + w110 * v110
+        + w111 * v111
+    )
+    out_offset = n * out_sN + c * out_sC + od * out_sD + oh * out_sH + ow * out_sW
+    tl.store(output_ptr + out_offset, result, mask=mask)
 
 
 # ============================================================
 # Python wrappers
 # ============================================================
-
-BLOCK_SIZE = 256
 
 
 def grid_sampler_2d(input, grid, interpolation_mode, padding_mode, align_corners):
@@ -688,7 +682,7 @@ def grid_sampler_2d(input, grid, interpolation_mode, padding_mode, align_corners
         return output
 
     total = OH * OW
-    grid_fn = lambda META: (triton.cdiv(total, META["BLOCK_SIZE"]), N)
+    grid_fn = lambda META: (triton.cdiv(total, META["BLOCK_SIZE"]), N * C)
 
     # Select kernel based on interpolation mode
     if interpolation_mode == MODE_NEAREST:
@@ -725,7 +719,6 @@ def grid_sampler_2d(input, grid, interpolation_mode, padding_mode, align_corners
             output.stride(3),
             padding_mode=padding_mode,
             align_corners=align_corners,
-            BLOCK_SIZE=BLOCK_SIZE,
         )
     return output
 
@@ -749,7 +742,7 @@ def grid_sampler_3d(input, grid, interpolation_mode, padding_mode, align_corners
         return output
 
     total = OD * OH * OW
-    grid_fn = lambda META: (triton.cdiv(total, META["BLOCK_SIZE"]), N)
+    grid_fn = lambda META: (triton.cdiv(total, META["BLOCK_SIZE"]), N * C)
 
     if interpolation_mode == MODE_NEAREST:
         kernel = grid_sampler_3d_nearest_kernel
@@ -792,6 +785,5 @@ def grid_sampler_3d(input, grid, interpolation_mode, padding_mode, align_corners
             output.stride(4),
             padding_mode=padding_mode,
             align_corners=align_corners,
-            BLOCK_SIZE=BLOCK_SIZE,
         )
     return output

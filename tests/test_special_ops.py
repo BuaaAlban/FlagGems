@@ -2122,14 +2122,25 @@ def _make_grid_sample_inputs_5d(shape_tuple, dtype, grid_range=1.0):
 def test_accuracy_grid_sampler_2d(shape, dtype, mode, padding_mode, align_corners):
     inp, grid = _make_grid_sample_inputs_4d(shape, dtype)
 
-    # Compare against PyTorch CUDA to avoid CPU/CUDA rounding diffs
-    ref_out = torch.nn.functional.grid_sample(
-        inp,
-        grid,
-        mode=mode,
-        padding_mode=padding_mode,
-        align_corners=align_corners,
-    )
+    if dtype == torch.bfloat16 and mode == "bicubic" and padding_mode == "reflection":
+        # Our kernel computes in float32 internally, which is more precise than
+        # PyTorch CUDA's bfloat16 bicubic+reflection path. Use float32 reference.
+        ref_out = torch.nn.functional.grid_sample(
+            inp.float(),
+            grid.float(),
+            mode=mode,
+            padding_mode=padding_mode,
+            align_corners=align_corners,
+        ).to(dtype)
+    else:
+        # Compare against PyTorch CUDA to avoid CPU/CUDA rounding diffs
+        ref_out = torch.nn.functional.grid_sample(
+            inp,
+            grid,
+            mode=mode,
+            padding_mode=padding_mode,
+            align_corners=align_corners,
+        )
     with flag_gems.use_gems():
         res_out = torch.nn.functional.grid_sample(
             inp,
