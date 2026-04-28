@@ -4,12 +4,80 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems import runtime
 from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as tle
 
 logger = logging.getLogger(__name__)
+
+
+CONV_TRANSPOSE2D_FORWARD_CONFIGS = [
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 16, "BLOCK_CO": 16, "BLOCK_CI": 16},
+        num_warps=2,
+        num_stages=2,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 16, "BLOCK_CO": 32, "BLOCK_CI": 16},
+        num_warps=2,
+        num_stages=2,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 32, "BLOCK_CO": 16, "BLOCK_CI": 16},
+        num_warps=2,
+        num_stages=2,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 32, "BLOCK_CO": 32, "BLOCK_CI": 16},
+        num_warps=4,
+        num_stages=2,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 32, "BLOCK_CO": 32, "BLOCK_CI": 32},
+        num_warps=4,
+        num_stages=2,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 32, "BLOCK_CO": 64, "BLOCK_CI": 32},
+        num_warps=4,
+        num_stages=2,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 64, "BLOCK_CO": 32, "BLOCK_CI": 16},
+        num_warps=4,
+        num_stages=2,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 64, "BLOCK_CO": 32, "BLOCK_CI": 32},
+        num_warps=4,
+        num_stages=2,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 64, "BLOCK_CO": 64, "BLOCK_CI": 16},
+        num_warps=4,
+        num_stages=3,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 64, "BLOCK_CO": 64, "BLOCK_CI": 32},
+        num_warps=4,
+        num_stages=2,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 128, "BLOCK_CO": 32, "BLOCK_CI": 32},
+        num_warps=4,
+        num_stages=2,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 128, "BLOCK_CO": 64, "BLOCK_CI": 32},
+        num_warps=4,
+        num_stages=2,
+    ),
+    triton.Config(
+        {"BLOCK_NI_HO_WO": 128, "BLOCK_CO": 128, "BLOCK_CI": 32},
+        num_warps=4,
+        num_stages=2,
+    ),
+]
 
 
 def conv_transpose2d_output_size(
@@ -52,7 +120,7 @@ def conv_transpose2d_output_size(
 
 @libentry()
 @triton.autotune(
-    configs=runtime.get_tuned_config("conv_transpose2d_forward"),
+    configs=CONV_TRANSPOSE2D_FORWARD_CONFIGS,
     key=[
         "in_n",
         "in_c",
