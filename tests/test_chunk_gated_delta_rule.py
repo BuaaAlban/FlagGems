@@ -83,3 +83,64 @@ def test_chunk_gated_delta_rule_forward_matches_eager_small(dtype):
 
     torch.testing.assert_close(out, ref_out)
     torch.testing.assert_close(final_state, ref_final)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="CUDA required for FLA kernels"
+)
+def test_fla_stage_wrappers_match_old_chain():
+    from flag_gems.fused.chunk_gated_delta_rule.forward_helpers import fwd_with_fla
+
+    pytest.importorskip("flag_gems.fused.FLA.chunk")
+
+    dtype = torch.bfloat16
+    device = "cuda"
+    b, t, h, hv, kdim, vdim, chunk_size = 1, 8, 2, 2, 4, 4, 4
+
+    q = torch.randn(b, t, h, kdim, dtype=dtype, device=device)
+    k = torch.randn(b, t, h, kdim, dtype=dtype, device=device)
+    v = torch.randn(b, t, hv, vdim, dtype=dtype, device=device)
+    g = torch.randn(b, t, hv, dtype=dtype, device=device)
+    beta = torch.sigmoid(torch.randn(b, t, hv, dtype=dtype, device=device))
+    initial_state = torch.zeros(b, hv, kdim, vdim, dtype=dtype, device=device)
+
+    try:
+        o_new, final_new = fwd_with_fla(
+            q,
+            k,
+            v,
+            g,
+            beta,
+            scale=None,
+            initial_state=initial_state.clone(),
+            output_final_state=True,
+            chunk_size=chunk_size,
+        )
+    except RuntimeError as exc:
+        if "no allocator was set" in str(exc):
+            pytest.xfail(
+                reason="Current environment lacks Triton allocator for FLA autotuning kernels"
+            )
+        raise
+
+    (
+        g_ref,
+        o_ref,
+        A_ref,
+        final_ref,
+        w_ref,
+        h_ref,
+        v_new_ref,
+    ) = flag_gems.fused.FLA.chunk.chunk_gated_delta_rule_fwd(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        scale=None,
+        initial_state=initial_state.clone(),
+        output_final_state=True,
+    )
+
+    torch.testing.assert_close(o_new, o_ref)
+    torch.testing.assert_close(final_new, final_ref)
