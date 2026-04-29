@@ -85,6 +85,39 @@ def test_chunk_gated_delta_rule_forward_matches_eager_small(dtype):
     torch.testing.assert_close(final_state, ref_final)
 
 
+@pytest.mark.parametrize(
+    "b,t,h,kdim,vdim,chunk_size",
+    [
+        (1, 4, 2, 4, 4, 4),
+        (2, 7, 2, 8, 8, 4),
+        (1, 64, 2, 16, 16, 32),
+        (1, 65, 2, 16, 16, 32),
+        (1, 33, 4, 16, 16, 16),
+    ],
+)
+@pytest.mark.parametrize("dtype", [torch.float32])
+def test_chunk_gated_delta_rule_forward_parametrized(
+    b, t, h, kdim, vdim, chunk_size, dtype
+):
+    device = "cpu"
+
+    q = torch.randn(b, t, h, kdim, dtype=dtype, device=device)
+    k = torch.randn(b, t, h, kdim, dtype=dtype, device=device)
+    v = torch.randn(b, t, h, vdim, dtype=dtype, device=device)
+    g = torch.sigmoid(torch.randn(b, t, h, dtype=dtype, device=device))
+    beta = torch.sigmoid(torch.randn(b, t, h, dtype=dtype, device=device))
+
+    ref_out, ref_final = _eager_chunk_gated_delta_rule(
+        q, k, v, g, beta, scale=None, output_final_state=True
+    )
+    out, final_state = flag_gems.chunk_gated_delta_rule_fwd(
+        q, k, v, g, beta, scale=None, output_final_state=True, chunk_size=chunk_size
+    )
+
+    torch.testing.assert_close(out, ref_out)
+    torch.testing.assert_close(final_state, ref_final)
+
+
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA required for FLA kernels"
 )
