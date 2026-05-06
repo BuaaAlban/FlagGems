@@ -16,7 +16,7 @@ def _eager_chunk_gated_delta_rule(
     dtype = q.dtype
 
     state = (
-        initial_state.clone().to(dtype=dtype, device=device)
+        initial_state.to(dtype=dtype, device=device)
         if initial_state is not None
         else torch.zeros(b, h, kdim, vdim, dtype=dtype, device=device)
     )
@@ -177,3 +177,12 @@ def test_fla_stage_wrappers_match_old_chain():
 
     torch.testing.assert_close(o_new, o_ref)
     torch.testing.assert_close(final_new, final_ref)
+
+
+@pytest.mark.skip(
+    reason="chunk_gated_delta_rule backward is not implemented in current MR"
+)
+@pytest.mark.parametrize("has_initial_state", [False, True])
+@pytest.mark.parametrize("dtype", [torch.float32])
+def test_chunk_gated_delta_rule_backward_matches_eager_small(has_initial_state, dtype):
+    pytest.skip("Backward is not implemented in current MR.")

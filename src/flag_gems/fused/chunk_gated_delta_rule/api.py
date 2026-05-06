@@ -13,6 +13,11 @@ def chunk_gated_delta_rule_fwd(
     cu_seqlens=None,
     chunk_size=64,
 ):
+    if cu_seqlens is not None:
+        raise NotImplementedError(
+            "cu_seqlens path is not yet implemented for chunk_gated_delta_rule_fwd"
+        )
+
     out, final_state = eager_chunk_gated_delta_rule(
         q,
         k,
@@ -22,7 +27,7 @@ def chunk_gated_delta_rule_fwd(
         scale,
         initial_state=initial_state,
         output_final_state=output_final_state,
-        cu_seqlens=cu_seqlens,
         chunk_size=chunk_size,
     )
+
     return out, final_state
