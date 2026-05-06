@@ -8,6 +8,7 @@ def eager_chunk_gated_delta_rule(
     vdim = v.shape[-1]
     device = q.device
     dtype = q.dtype
+    s = scale if scale is not None else kdim**-0.5
 
     state = (
         initial_state.clone().to(dtype=dtype, device=device)
@@ -28,6 +29,6 @@ def eager_chunk_gated_delta_rule(
         state = state * g_t.unsqueeze(-1) + beta_t * torch.einsum(
             "bhk,bhd->bhkd", k_t, v_new
         )
-        out[:, i_t, :, :] = torch.einsum("bhk,bhkd->bhd", q_t, state)
+        out[:, i_t, :, :] = torch.einsum("bhk,bhkd->bhd", q_t, state) * s
 
     return out, state

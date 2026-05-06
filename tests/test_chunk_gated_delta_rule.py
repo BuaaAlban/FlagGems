@@ -14,6 +14,7 @@ def _eager_chunk_gated_delta_rule(
     vdim = v.shape[-1]
     device = q.device
     dtype = q.dtype
+    s = scale if scale is not None else kdim**-0.5
 
     state = (
         initial_state.to(dtype=dtype, device=device)
@@ -34,7 +35,7 @@ def _eager_chunk_gated_delta_rule(
         state = state * g_t.unsqueeze(-1) + beta_t * torch.einsum(
             "bhk,bhd->bhkd", k_t, v_new
         )
-        out[:, i_t, :, :] = torch.einsum("bhk,bhkd->bhd", q_t, state)
+        out[:, i_t, :, :] = torch.einsum("bhk,bhkd->bhd", q_t, state) * s
 
     final_state = state if output_final_state else state
     return out, final_state
@@ -116,6 +117,47 @@ def test_chunk_gated_delta_rule_forward_parametrized(
 
     torch.testing.assert_close(out, ref_out)
     torch.testing.assert_close(final_state, ref_final)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="CUDA required for fused Triton path"
+)
+@pytest.mark.parametrize(
+    "b,t,h,kdim,vdim,chunk_size",
+    [
+        (1, 16, 2, 8, 8, 16),
+        (1, 64, 2, 16, 16, 64),
+        (1, 128, 2, 32, 32, 64),
+        (2, 128, 4, 32, 32, 64),
+    ],
+)
+@pytest.mark.parametrize("dtype", [torch.float32])
+def test_fused_cuda_matches_eager(b, t, h, kdim, vdim, chunk_size, dtype):
+    """Stable-input cross-check between fused CUDA path and pure-PyTorch eager."""
+    torch.manual_seed(0)
+    device = "cuda"
+    q = torch.randn(b, t, h, kdim, dtype=dtype, device=device) * 0.5
+    k = torch.randn(b, t, h, kdim, dtype=dtype, device=device) * 0.5
+    v = torch.randn(b, t, h, vdim, dtype=dtype, device=device) * 0.5
+    g = torch.sigmoid(torch.randn(b, t, h, dtype=dtype, device=device)) * 0.5
+    beta = torch.sigmoid(torch.randn(b, t, h, dtype=dtype, device=device)) * 0.5
+    scale = kdim**-0.5
+
+    ref_out, ref_final = _eager_chunk_gated_delta_rule(
+        q, k, v, g, beta, scale, output_final_state=True, chunk_size=chunk_size
+    )
+    out, final_state = flag_gems.chunk_gated_delta_rule_fwd(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        scale=scale,
+        output_final_state=True,
+        chunk_size=chunk_size,
+    )
+    torch.testing.assert_close(out, ref_out, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(final_state, ref_final, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.skipif(

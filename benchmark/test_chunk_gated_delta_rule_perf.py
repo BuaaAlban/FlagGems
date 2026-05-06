@@ -67,6 +67,7 @@ def _torch_reference_chunk_gated_delta_rule(
     vdim = v.shape[-1]
     device = q.device
     dtype = q.dtype
+    s = scale if scale is not None else kdim**-0.5
 
     state = (
         initial_state.clone().to(dtype=dtype, device=device)
@@ -74,7 +75,6 @@ def _torch_reference_chunk_gated_delta_rule(
         else torch.zeros(b, h, kdim, vdim, dtype=dtype, device=device)
     )
     out = torch.empty(b, t, h, vdim, dtype=dtype, device=device)
-    s = scale if scale is not None else kdim**-0.5
     for i_t in range(t):
         q_t = q[:, i_t, :, :]
         k_t = k[:, i_t, :, :]
@@ -87,7 +87,7 @@ def _torch_reference_chunk_gated_delta_rule(
         state = state * g_t.unsqueeze(-1) + beta_t * torch.einsum(
             "bhk,bhd->bhkd", k_t, v_new
         )
-        out[:, i_t, :, :] = torch.einsum("bhk,bhkd->bhd", q_t * s, state)
+        out[:, i_t, :, :] = torch.einsum("bhk,bhkd->bhd", q_t, state) * s
 
     final_state = state if output_final_state else state
     return out, final_state
