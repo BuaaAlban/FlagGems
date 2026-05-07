@@ -1,14 +1,13 @@
 import pytest
 
-from . import attri_util as attrs
-from . import performance_utils as base
+from . import base, consts
 
 
-@pytest.mark.dunder_or
-def test_dunder_or():
+@pytest.mark.dunder_or_tensor
+def test_dunder_or_tensor():
     bench = base.BinaryPointwiseBenchmark(
         op_name="dunder_or",
         torch_op=lambda a, b: a | b,
-        dtypes=attrs.INT_DTYPES + attrs.BOOL_DTYPES,
+        dtypes=consts.INT_DTYPES + consts.BOOL_DTYPES,
     )
     bench.run()

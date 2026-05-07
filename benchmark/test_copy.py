@@ -3,9 +3,7 @@ from typing import Generator
 import pytest
 import torch
 
-from . import attri_util as consts
-from . import performance_utils as base
-from . import utils
+from . import base, consts, utils
 
 
 class CopyInplaceBenchmark(base.Benchmark):
@@ -17,10 +15,6 @@ class CopyInplaceBenchmark(base.Benchmark):
 
 
 @pytest.mark.copy_
-@pytest.mark.skipif(
-    utils.SkipVersion("torch", "<2.4"),
-    reason="The copy operator requires torch >= 2.4",
-)
 def test_copy_inplace():
     bench = CopyInplaceBenchmark(
         op_name="copy_",

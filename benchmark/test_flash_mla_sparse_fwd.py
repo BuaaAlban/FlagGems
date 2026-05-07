@@ -7,7 +7,7 @@ import torch
 
 import flag_gems
 
-from . import performance_utils as base
+from . import base
 
 try:
     from vllm.v1.attention.ops.flashmla import (
@@ -21,6 +21,9 @@ except ImportError:
 
 @dataclasses.dataclass
 class TestParam:
+    # Instruct pytest to ignore this class
+    __test__ = False
+
     s_q: int
     s_kv: int
     topk: int

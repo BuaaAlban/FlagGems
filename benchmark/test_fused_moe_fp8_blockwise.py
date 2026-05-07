@@ -5,7 +5,7 @@ import torch
 
 import flag_gems
 
-from . import performance_utils as base
+from . import base
 
 
 def is_cuda_available():
@@ -179,7 +179,7 @@ def _gems_fused_moe_fp8_blockwise_wrapper(
     )
 
 
-@pytest.mark.fused_moe
+@pytest.mark.fused_experts_impl
 @pytest.mark.skipif(
     not (HAS_VLLM_FUSED_MOE and CUDA_AVAILABLE),
     reason="requires vLLM and NVIDIA Hopper architecture for FP8 blockwise",

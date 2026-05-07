@@ -1,11 +1,7 @@
 import pytest
 import torch
 
-import flag_gems
-
-from . import attri_util as consts
-from . import performance_utils as base
-from . import utils
+from . import base, consts, utils
 
 
 class KronBenchmark(base.GenericBenchmark2DOnly):
@@ -20,10 +16,6 @@ def _input_fn(shape, dtype, device):
 
 
 @pytest.mark.kron
-@pytest.mark.skipif(
-    flag_gems.vendor_name == "kunlunxin" and utils.SkipVersion("torch", "<2.5"),
-    reason="only support torch >= 2.5.",
-)
 def test_kron():
     bench = KronBenchmark(
         op_name="kron",

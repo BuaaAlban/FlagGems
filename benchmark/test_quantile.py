@@ -1,8 +1,7 @@
 import pytest
 import torch
 
-from . import performance_utils as base
-from . import utils
+from . import base, utils
 
 
 class QuantileBenchmark(base.GenericBenchmark):
@@ -19,7 +18,6 @@ def quantile_input_fn(shape, cur_dtype, device):
     yield inp, q, 0
 
 
-# @pytest.mark.skipif(True, reason="Skipping Triton version due to poor performance")
 @pytest.mark.quantile
 def test_quantile():
     bench = QuantileBenchmark(
