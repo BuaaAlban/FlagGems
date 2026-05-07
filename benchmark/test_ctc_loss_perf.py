@@ -65,7 +65,7 @@ class CTCLossBenchmark(base.GenericBenchmark):
 
 
 @pytest.mark.ctc_loss
-def test_perf_ctc_loss():
+def test_ctc_loss():
     bench = CTCLossBenchmark(
         input_fn=ctc_loss_input_fn,
         op_name="ctc_loss",
@@ -76,7 +76,7 @@ def test_perf_ctc_loss():
 
 
 @pytest.mark.ctc_loss
-def test_perf_ctc_loss_backward():
+def test_ctc_loss_backward():
     bench = CTCLossBenchmark(
         input_fn=ctc_loss_input_fn,
         op_name="ctc_loss",
