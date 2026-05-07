@@ -4,8 +4,8 @@ import pytest
 import torch
 
 import flag_gems
-from benchmark.attri_util import BenchLevel
-from benchmark.performance_utils import Config, GenericBenchmark
+
+from . import base, consts
 
 CTC_DEFAULT_SHAPES = [
     (64, 4, 32, 16),
@@ -57,7 +57,7 @@ def ctc_loss_input_fn(shape, cur_dtype, device):
         "zero_infinity": False,
     }
 
-    if Config.bench_level == BenchLevel.COMPREHENSIVE:
+    if base.Config.bench_level == consts.BenchLevel.COMPREHENSIVE:
         yield log_probs, targets, input_lengths, target_lengths, {
             "blank": blank,
             "reduction": "sum",
@@ -84,7 +84,7 @@ if flag_gems.runtime.device.support_bf16:
     CTC_BENCH_DTYPES.append(torch.bfloat16)
 
 
-class CTCLossBenchmark(GenericBenchmark):
+class CTCLossBenchmark(base.GenericBenchmark):
     DEFAULT_SHAPE_DESC = "T, N, C, S"
 
     def get_input_iter(self, cur_dtype) -> Generator:
