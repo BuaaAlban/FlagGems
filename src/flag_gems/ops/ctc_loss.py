@@ -902,3 +902,231 @@ def ctc_loss(
         reduction,
         zero_infinity,
     )
+
+
+# ============================================================================
+# Low-level aten dispatch entry points
+#
+# Thin wrappers that expose the same Triton kernels through the low-level
+# aten signatures (aten::_ctc_loss / aten::_ctc_loss_backward). These keep
+# the legacy decomposition path covered alongside the high-level
+# ctc_loss.{Tensor,IntList} registrations and share kernels with
+# _CtcLossFunction.
+# ============================================================================
+
+
+def _ctc_loss_impl(
+    log_probs,
+    targets,
+    input_lengths,
+    target_lengths,
+    blank=0,
+    zero_infinity=False,
+):
+    """aten::_ctc_loss / aten::_ctc_loss.Tensor implementation.
+
+    Returns:
+        (neg_log_likelihood, log_alpha) matching PyTorch's internal contract.
+    """
+    logger.debug("GEMS _CTC_LOSS")
+
+    if log_probs.ndim != 3:
+        raise RuntimeError(
+            f"_ctc_loss expects log_probs to be 3D (T, N, C), got {log_probs.ndim}D"
+        )
+    if blank < 0 or blank >= log_probs.shape[-1]:
+        raise RuntimeError("blank must be in label range")
+
+    device = log_probs.device
+    T, N, C = log_probs.shape
+
+    work_log_probs = log_probs.contiguous()
+    compute_dtype = _compute_dtype(work_log_probs.dtype)
+    if work_log_probs.dtype != compute_dtype:
+        work_log_probs = work_log_probs.to(compute_dtype)
+
+    if torch.is_floating_point(targets):
+        work_targets = targets.to(dtype=torch.long).contiguous()
+    elif _is_integral_dtype(targets.dtype):
+        work_targets = targets.contiguous()
+    else:
+        raise RuntimeError("ctc_loss targets must be integral or floating point")
+
+    work_input_lengths = _lengths_to_tensor(input_lengths, device, "input_lengths")
+    work_target_lengths = _lengths_to_tensor(target_lengths, device, "target_lengths")
+
+    if work_input_lengths.numel() != N:
+        raise RuntimeError(
+            f"_ctc_loss expected input_lengths to have size {N}, "
+            f"but got {work_input_lengths.numel()}"
+        )
+    if work_target_lengths.numel() != N:
+        raise RuntimeError(
+            f"_ctc_loss expected target_lengths to have size {N}, "
+            f"but got {work_target_lengths.numel()}"
+        )
+
+    max_target = int(work_target_lengths.max().item())
+    if max_target < 0:
+        raise RuntimeError("ctc_loss target_lengths must be non-negative")
+
+    state_count_max = 2 * max_target + 1
+    if work_targets.ndim == 1:
+        target_1d = True
+        total_target_length = int(work_target_lengths.sum().item())
+        if total_target_length != work_targets.numel():
+            raise RuntimeError(
+                "ctc_loss expected concatenated targets length to equal "
+                "sum(target_lengths)"
+            )
+        target_stride = max_target
+    elif work_targets.ndim == 2:
+        target_1d = False
+        if max_target > work_targets.shape[1]:
+            raise RuntimeError(
+                "ctc_loss target_lengths cannot exceed padded target width"
+            )
+        target_stride = work_targets.shape[1]
+    else:
+        raise RuntimeError(
+            "ctc_loss expects targets to be a 1D concatenated tensor or a "
+            f"2D padded tensor, but got {work_targets.ndim}D"
+        )
+
+    block_s = triton.next_power_of_2(state_count_max) if state_count_max > 0 else 1
+
+    neg_log_likelihood = torch.empty((N,), dtype=torch.float32, device=device)
+    log_alpha = torch.empty((N, T, state_count_max), dtype=torch.float32, device=device)
+
+    with torch_device_fn.device(device):
+        _ctc_loss_forward_kernel[(N,)](
+            work_log_probs,
+            work_targets,
+            work_input_lengths,
+            work_target_lengths,
+            neg_log_likelihood,
+            log_alpha,
+            T,
+            N,
+            C,
+            target_stride,
+            state_count_max,
+            blank,
+            target_1d,
+            block_s,
+        )
+
+    if zero_infinity:
+        neg_log_likelihood = torch.where(
+            torch.isinf(neg_log_likelihood),
+            torch.zeros((), dtype=neg_log_likelihood.dtype, device=device),
+            neg_log_likelihood,
+        )
+
+    return neg_log_likelihood, log_alpha
+
+
+def _ctc_loss_backward_impl(
+    grad,
+    log_probs,
+    targets,
+    input_lengths,
+    target_lengths,
+    neg_log_likelihood,
+    log_alpha,
+    blank=0,
+    zero_infinity=False,
+):
+    """aten::_ctc_loss_backward / aten::_ctc_loss_backward.Tensor implementation.
+
+    Returns:
+        grad_log_probs (T, N, C)
+    """
+    logger.debug("GEMS _CTC_LOSS_BACKWARD")
+
+    device = log_probs.device
+    T, N, C = log_probs.shape
+
+    work_log_probs = log_probs.contiguous()
+    compute_dtype = _compute_dtype(work_log_probs.dtype)
+    if work_log_probs.dtype != compute_dtype:
+        work_log_probs = work_log_probs.to(compute_dtype)
+
+    if torch.is_floating_point(targets):
+        work_targets = targets.to(dtype=torch.long).contiguous()
+    else:
+        work_targets = targets.contiguous()
+
+    work_input_lengths = _lengths_to_tensor(input_lengths, device, "input_lengths")
+    work_target_lengths = _lengths_to_tensor(target_lengths, device, "target_lengths")
+
+    max_target = int(work_target_lengths.max().item())
+    state_count_max = 2 * max_target + 1
+    if work_targets.ndim == 1:
+        target_1d = True
+        target_stride = max_target
+    else:
+        target_1d = False
+        target_stride = work_targets.shape[1]
+
+    nll = neg_log_likelihood
+    if nll.dtype != torch.float32:
+        nll = nll.to(torch.float32)
+    nll = nll.contiguous()
+
+    saved_alpha = log_alpha
+    if saved_alpha.dtype != torch.float32:
+        saved_alpha = saved_alpha.to(torch.float32)
+    saved_alpha = saved_alpha.contiguous()
+
+    grad_output = grad.contiguous().to(torch.float32)
+
+    grad_log_probs = torch.empty_like(work_log_probs)
+    total = work_log_probs.numel()
+    block = 256
+    block_s = triton.next_power_of_2(state_count_max) if state_count_max > 0 else 1
+
+    with torch_device_fn.device(device):
+        _ctc_loss_init_grad_kernel[(triton.cdiv(total, block),)](
+            work_log_probs,
+            work_input_lengths,
+            work_target_lengths,
+            nll,
+            grad_output,
+            grad_log_probs,
+            total,
+            T,
+            N,
+            C,
+            _REDUCTION_NONE,
+            zero_infinity,
+            block,
+        )
+        scratch_beta = torch.empty(
+            (N, 2, state_count_max), dtype=torch.float32, device=device
+        )
+        _ctc_loss_backward_kernel[(N,)](
+            work_log_probs,
+            work_targets,
+            work_input_lengths,
+            work_target_lengths,
+            nll,
+            saved_alpha,
+            grad_output,
+            grad_log_probs,
+            scratch_beta,
+            T,
+            N,
+            C,
+            target_stride,
+            state_count_max,
+            blank,
+            target_1d,
+            _REDUCTION_NONE,
+            zero_infinity,
+            block_s,
+        )
+
+    if grad_log_probs.dtype != log_probs.dtype:
+        grad_log_probs = grad_log_probs.to(log_probs.dtype)
+    return grad_log_probs
