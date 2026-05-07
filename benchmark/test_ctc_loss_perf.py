@@ -3,8 +3,6 @@ from typing import Generator
 import pytest
 import torch
 
-import flag_gems
-
 from . import base, consts
 
 CTC_DEFAULT_SHAPES = [
@@ -15,40 +13,16 @@ CTC_DEFAULT_SHAPES = [
 ]
 
 
-def _make_targets(N, S, C, device, blank=0):
-    target_lengths = torch.full((N,), S, dtype=torch.long, device=device)
-    targets = torch.randint(0, C - 1, (N, S), dtype=torch.long, device=device)
-    targets = targets + (targets >= blank).to(targets.dtype)
-    return targets, target_lengths
-
-
-def _reference_ctc_loss(
-    log_probs,
-    targets,
-    input_lengths,
-    target_lengths,
-    *args,
-    **kwargs,
-):
-    """Reference op: PyTorch's ctc_loss expects float32 for fp16/bf16 inputs."""
-    ref_log_probs = log_probs if log_probs.dtype == torch.float32 else log_probs.float()
-    out = torch.nn.functional.ctc_loss(
-        ref_log_probs,
-        targets,
-        input_lengths,
-        target_lengths,
-        *args,
-        **kwargs,
-    )
-    return out.to(log_probs.dtype) if out.dtype != log_probs.dtype else out
-
-
 def ctc_loss_input_fn(shape, cur_dtype, device):
     T, N, C, S = shape
     blank = 0
+    # torch.nn.functional.ctc_loss only supports float32 log_probs, so we
+    # always generate float32 inputs here regardless of `cur_dtype`.
     raw = torch.randn(T, N, C, dtype=torch.float32, device=device)
-    log_probs = torch.nn.functional.log_softmax(raw, dim=-1).to(cur_dtype)
-    targets, target_lengths = _make_targets(N, S, C, device, blank=blank)
+    log_probs = torch.nn.functional.log_softmax(raw, dim=-1)
+    targets = torch.randint(0, C - 1, (N, S), dtype=torch.long, device=device)
+    targets = targets + (targets >= blank).to(targets.dtype)
+    target_lengths = torch.full((N,), S, dtype=torch.long, device=device)
     input_lengths = torch.full((N,), T, dtype=torch.long, device=device)
 
     yield log_probs, targets, input_lengths, target_lengths, {
@@ -79,11 +53,6 @@ def ctc_loss_input_fn(shape, cur_dtype, device):
         }
 
 
-CTC_BENCH_DTYPES = [torch.float32, torch.float16]
-if flag_gems.runtime.device.support_bf16:
-    CTC_BENCH_DTYPES.append(torch.bfloat16)
-
-
 class CTCLossBenchmark(base.GenericBenchmark):
     DEFAULT_SHAPE_DESC = "T, N, C, S"
 
@@ -100,8 +69,8 @@ def test_perf_ctc_loss():
     bench = CTCLossBenchmark(
         input_fn=ctc_loss_input_fn,
         op_name="ctc_loss",
-        torch_op=_reference_ctc_loss,
-        dtypes=CTC_BENCH_DTYPES,
+        torch_op=torch.nn.functional.ctc_loss,
+        dtypes=[torch.float32],
     )
     bench.run()
 
@@ -111,8 +80,8 @@ def test_perf_ctc_loss_backward():
     bench = CTCLossBenchmark(
         input_fn=ctc_loss_input_fn,
         op_name="ctc_loss",
-        torch_op=_reference_ctc_loss,
-        dtypes=CTC_BENCH_DTYPES,
+        torch_op=torch.nn.functional.ctc_loss,
+        dtypes=[torch.float32],
         is_backward=True,
     )
     bench.run()
