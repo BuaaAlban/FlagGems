@@ -1,11 +1,12 @@
 import dataclasses
+from typing import Generator
 
 import pytest
 import torch
 
 import flag_gems
-from benchmark.attri_util import BenchLevel
-from benchmark.performance_utils import Config, GenericBenchmark
+
+from . import base, consts
 
 
 @dataclasses.dataclass
@@ -42,13 +43,12 @@ def _install_triton_cuda_allocator():
 _install_triton_cuda_allocator()
 
 
-def _chunk_shapes():
-    return [
-        (1, 64, 2, 16, 16, 64),
-        (1, 128, 2, 32, 32, 64),
-        (2, 128, 4, 32, 32, 64),
-        (1, 256, 4, 64, 64, 64),
-    ]
+CHUNK_GATED_DELTA_RULE_SHAPES = [
+    (1, 64, 2, 16, 16, 64),
+    (1, 128, 2, 32, 32, 64),
+    (2, 128, 4, 32, 32, 64),
+    (1, 256, 4, 64, 64, 64),
+]
 
 
 def _torch_reference_chunk_gated_delta_rule(
@@ -65,16 +65,14 @@ def _torch_reference_chunk_gated_delta_rule(
 ):
     b, t, h, kdim = q.shape
     vdim = v.shape[-1]
-    device = q.device
-    dtype = q.dtype
+    state = (
+        initial_state.clone().to(dtype=q.dtype, device=q.device)
+        if initial_state is not None
+        else torch.zeros(b, h, kdim, vdim, dtype=q.dtype, device=q.device)
+    )
+    out = torch.empty(b, t, h, vdim, dtype=q.dtype, device=q.device)
     s = scale if scale is not None else kdim**-0.5
 
-    state = (
-        initial_state.clone().to(dtype=dtype, device=device)
-        if initial_state is not None
-        else torch.zeros(b, h, kdim, vdim, dtype=dtype, device=device)
-    )
-    out = torch.empty(b, t, h, vdim, dtype=dtype, device=device)
     for i_t in range(t):
         q_t = q[:, i_t, :, :]
         k_t = k[:, i_t, :, :]
@@ -93,92 +91,49 @@ def _torch_reference_chunk_gated_delta_rule(
     return out, final_state
 
 
-def chunk_gated_delta_rule_input_fn(shape, dtype, device):
+def chunk_gated_delta_rule_input_fn(shape, cur_dtype, device):
     b, t, h, kdim, vdim, chunk_size = shape
-    q = torch.randn(b, t, h, kdim, dtype=dtype, device=device)
-    k = torch.randn(b, t, h, kdim, dtype=dtype, device=device)
-    v = torch.randn(b, t, h, vdim, dtype=dtype, device=device)
-    g = torch.sigmoid(torch.randn(b, t, h, dtype=dtype, device=device))
-    beta = torch.sigmoid(torch.randn(b, t, h, dtype=dtype, device=device))
+    q = torch.randn(b, t, h, kdim, dtype=cur_dtype, device=device)
+    k = torch.randn(b, t, h, kdim, dtype=cur_dtype, device=device)
+    v = torch.randn(b, t, h, vdim, dtype=cur_dtype, device=device)
+    g = torch.sigmoid(torch.randn(b, t, h, dtype=cur_dtype, device=device)) * 0.5
+    beta = torch.sigmoid(torch.randn(b, t, h, dtype=cur_dtype, device=device)) * 0.5
 
-    yield (
-        q,
-        k,
-        v,
-        g,
-        beta,
-        kdim**-0.5,
-        None,
-        True,
-        chunk_size,
-    )
+    yield q, k, v, g, beta, {
+        "scale": kdim**-0.5,
+        "initial_state": None,
+        "output_final_state": True,
+        "chunk_size": chunk_size,
+    }
 
-    if Config.bench_level == BenchLevel.COMPREHENSIVE:
-        initial_state = torch.zeros(b, h, kdim, vdim, dtype=dtype, device=device)
-        yield (
-            q,
-            k,
-            v,
-            g,
-            beta,
-            kdim**-0.5,
-            initial_state,
-            True,
-            chunk_size,
-        )
+    if base.Config.bench_level == consts.BenchLevel.COMPREHENSIVE:
+        initial_state = torch.zeros(b, h, kdim, vdim, dtype=cur_dtype, device=device)
+        yield q, k, v, g, beta, {
+            "scale": kdim**-0.5,
+            "initial_state": initial_state,
+            "output_final_state": True,
+            "chunk_size": chunk_size,
+        }
 
 
-class ChunkGatedDeltaRuleBenchmark(GenericBenchmark):
-    def get_input_iter(self, cur_dtype):
-        for shape in _chunk_shapes():
+class ChunkGatedDeltaRuleBenchmark(base.GenericBenchmark):
+    DEFAULT_SHAPE_DESC = "B, T, H, K, V, BT"
+
+    def get_input_iter(self, cur_dtype) -> Generator:
+        for shape in CHUNK_GATED_DELTA_RULE_SHAPES:
             yield from self.input_fn(shape, cur_dtype, self.device)
 
-
-def _torch_baseline(*args, **kwargs):
-    out, final_state = _torch_reference_chunk_gated_delta_rule(
-        *args,
-        **{
-            k: v
-            for k, v in kwargs.items()
-            if k
-            in {
-                "scale",
-                "initial_state",
-                "output_final_state",
-                "cu_seqlens",
-                "chunk_size",
-            }
-        },
-    )
-    return out, final_state
-
-
-def _gems_chunk_gated_delta_rule(*args, **kwargs):
-    out, final_state = flag_gems.chunk_gated_delta_rule_fwd(
-        *args,
-        **{
-            k: v
-            for k, v in kwargs.items()
-            if k
-            in {
-                "scale",
-                "initial_state",
-                "output_final_state",
-                "cu_seqlens",
-                "chunk_size",
-            }
-        },
-    )
-    return out, final_state
+    def set_more_shapes(self):
+        return []
 
 
 @pytest.mark.chunk_gated_delta_rule
-def test_perf_chunk_gated_delta_rule():
+def test_chunk_gated_delta_rule():
     bench = ChunkGatedDeltaRuleBenchmark(
-        op_name="chunk_gated_delta_rule_fwd",
-        torch_op=_torch_baseline,
         input_fn=chunk_gated_delta_rule_input_fn,
+        op_name="chunk_gated_delta_rule_fwd",
+        torch_op=_torch_reference_chunk_gated_delta_rule,
         dtypes=[torch.float32],
     )
-    bench.set_gems(_gems_chunk_gated_delta_rule)
+    bench.set_gems(flag_gems.chunk_gated_delta_rule_fwd)
     bench.run()
