@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 @libentry()
-@triton.autotune(configs=runtime.get_tuned_config("tril"), key=["M", "N"])
+@triton.autotune(configs=runtime.get_tuned_config("triu"), key=["M", "N"])
 @triton.jit(do_not_specialize=["diagonal"])
 def tril_kernel(
     X,
@@ -45,7 +45,7 @@ def tril_kernel(
 
 
 @libentry()
-@triton.autotune(configs=runtime.get_tuned_config("tril"), key=["M", "N_EFF"])
+@triton.autotune(configs=runtime.get_tuned_config("triu"), key=["M", "N_EFF"])
 @triton.jit(do_not_specialize=["diagonal"])
 def tril_copy_lower_kernel(
     X,
@@ -75,7 +75,7 @@ def tril_copy_lower_kernel(
 
 
 @libentry()
-@triton.autotune(configs=runtime.get_tuned_config("tril"), key=["M", "N"])
+@triton.autotune(configs=runtime.get_tuned_config("triu"), key=["M", "N"])
 @triton.jit(do_not_specialize=["diagonal"])
 def tril_zero_upper_kernel(
     X,
