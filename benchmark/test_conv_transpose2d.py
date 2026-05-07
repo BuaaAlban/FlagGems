@@ -2,11 +2,11 @@ import pytest
 import torch
 
 import flag_gems
-from benchmark.attri_util import FLOAT_DTYPES
-from benchmark.performance_utils import GenericBenchmark
+
+from . import base, consts
 
 
-class ConvTranspose2DBenchmark(GenericBenchmark):
+class ConvTranspose2DBenchmark(base.GenericBenchmark):
     def set_more_shapes(self):
         return [
             # (batch, in_c, in_h, in_w, out_c, kh, kw, stride, padding, groups)
@@ -53,7 +53,7 @@ def test_perf_conv_transpose2d():
         input_fn=conv_transpose2d_input_fn,
         op_name="conv_transpose2d",
         torch_op=torch.nn.functional.conv_transpose2d,
-        dtypes=FLOAT_DTYPES,
+        dtypes=consts.FLOAT_DTYPES,
     )
     bench.set_gems(flag_gems.conv_transpose2d)
     bench.run()
