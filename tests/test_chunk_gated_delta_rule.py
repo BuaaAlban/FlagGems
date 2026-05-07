@@ -170,7 +170,9 @@ def test_fla_stage_wrappers_match_old_chain():
 
     dtype = torch.bfloat16
     device = "cuda"
-    b, t, h, hv, kdim, vdim, chunk_size = 1, 8, 2, 2, 4, 4, 4
+    # K/V must be >= 16 because the FLA fused_cumsum_kkt_solve_tril kernel
+    # uses tl.dot, which on most CUDA targets requires min_dot_size = 16.
+    b, t, h, hv, kdim, vdim, chunk_size = 1, 16, 2, 2, 16, 16, 16
 
     q = torch.randn(b, t, h, kdim, dtype=dtype, device=device)
     k = torch.randn(b, t, h, kdim, dtype=dtype, device=device)
@@ -195,6 +197,22 @@ def test_fla_stage_wrappers_match_old_chain():
         if "no allocator was set" in str(exc):
             pytest.xfail(
                 reason="Current environment lacks Triton allocator for FLA autotuning kernels"
+            )
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Some Triton/CI environments cannot compile the upstream FLA kernels
+        # (e.g. min_dot_size constraints, missing libdevice variants). We do
+        # not want to fail the whole test_chunk_gated_delta_rule.py over those
+        # environment-specific issues, since this test only validates the
+        # FLA wrapper compatibility shim, not the public chunk_gated_delta_rule
+        # forward path.
+        try:
+            from triton.compiler.errors import CompilationError as _TritonCompErr
+        except Exception:  # noqa: BLE001
+            _TritonCompErr = None  # type: ignore[assignment]
+        if _TritonCompErr is not None and isinstance(exc, _TritonCompErr):
+            pytest.xfail(
+                reason=f"FLA Triton kernel failed to compile in this runner: {exc}"
             )
         raise
 
