@@ -1,4 +1,3 @@
-import dataclasses
 from typing import Generator
 
 import pytest
@@ -7,41 +6,6 @@ import torch
 import flag_gems
 
 from . import base, consts
-
-
-@dataclasses.dataclass
-class _TorchCudaBuffer:
-    ptr: int
-
-    def data_ptr(self) -> int:
-        return self.ptr
-
-
-def _install_triton_cuda_allocator():
-    if not torch.cuda.is_available():
-        return
-
-    from triton.runtime._allocation import NullAllocator, set_allocator
-
-    def allocator(size, alignment, stream):  # noqa: ARG001
-        mem = torch.cuda.caching_allocator_alloc(size)
-        return _TorchCudaBuffer(ptr=mem)
-
-    set_allocator(allocator)
-
-    def _reset():
-        try:
-            set_allocator(NullAllocator())
-        except Exception:  # noqa: BLE001
-            pass
-
-    import atexit
-
-    atexit.register(_reset)
-
-
-_install_triton_cuda_allocator()
-
 
 CHUNK_GATED_DELTA_RULE_SHAPES = [
     (1, 64, 2, 16, 16, 64),
